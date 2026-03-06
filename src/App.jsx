@@ -1,14 +1,14 @@
-import React, {useState, useEffect, useRef} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import 'ol/ol.css';
 import Map from 'ol/Map';
 import View from 'ol/View';
 import {Tile as TileLayer, Vector as VectorLayer} from 'ol/layer';
 import {OSM, Vector as VectorSource} from 'ol/source';
-import {Select, Modify} from 'ol/interaction';
-import {click, pointerMove} from 'ol/events/condition'; // pointerMove 추가
+import {Modify, Select} from 'ol/interaction';
+import {click, pointerMove} from 'ol/events/condition';
+import Feature from 'ol/Feature';
 import LineString from 'ol/geom/LineString';
 import Point from 'ol/geom/Point';
-import Feature from 'ol/Feature';
 import {Circle as CircleStyle, Fill, Stroke, Style} from 'ol/style';
 import {defaults as defaultControls} from 'ol/control';
 
@@ -17,17 +17,54 @@ import './App.css';
 function App() {
     const [features, setFeatures] = useState([]);
     const [selectedFeatureId, setSelectedFeatureId] = useState(null);
+    const [hoveredFeatureId, setHoveredFeatureId] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
     const [nodes, setNodes] = useState([]);
     const [highlightedNodeIndex, setHighlightedNodeIndex] = useState(null);
+    const [isAddVertexMode, setIsAddVertexMode] = useState(false);
 
     const mapElement = useRef(null);
     const mapRef = useRef(null);
     const sourceRef = useRef(null);
+    const lineLayerRef = useRef(null);
     const highlightSourceRef = useRef(null);
     const selectInteractionRef = useRef(null);
     const modifyInteractionRef = useRef(null);
     const backupGeometryRef = useRef(null);
+    const selectedFeatureIdRef = useRef(null);
+    const hoveredFeatureIdRef = useRef(null);
+    const isAddVertexModeRef = useRef(false);
+
+    // [수정 포인트] 선택/호버 상태에 따라 라인 스타일을 다르게 렌더링.
+    const lineStyleFunction = (feature) => {
+        const featureId = feature.getId();
+        const isSelected = selectedFeatureIdRef.current === featureId;
+        const isHovered = hoveredFeatureIdRef.current === featureId;
+
+        const strokeColor = isSelected ? '#f03e3e' : isHovered ? '#22b8cf' : '#0055ff';
+        const strokeWidth = isSelected ? 6 : isHovered ? 5 : 4;
+        const vertexStroke = isSelected ? '#f03e3e' : '#0055ff';
+
+        const geometry = feature.getGeometry();
+        const styles = [
+            new Style({
+                stroke: new Stroke({color: strokeColor, width: strokeWidth})
+            })
+        ];
+
+        geometry.getCoordinates().forEach((coord) => {
+            styles.push(new Style({
+                geometry: new Point(coord),
+                image: new CircleStyle({
+                    radius: isSelected ? 6 : 5,
+                    fill: new Fill({color: 'white'}),
+                    stroke: new Stroke({color: vertexStroke, width: 2})
+                })
+            }));
+        });
+
+        return styles;
+    };
 
     useEffect(() => {
         if (!mapElement.current || mapRef.current) return;
@@ -38,20 +75,18 @@ function App() {
         const highlightSource = new VectorSource();
         highlightSourceRef.current = highlightSource;
 
+        const lineLayer = new VectorLayer({
+            source: vectorSource,
+            style: lineStyleFunction
+        });
+        lineLayerRef.current = lineLayer;
+
         const map = new Map({
             target: mapElement.current,
-            controls: defaultControls({
-                attribution: false,
-                zoom: false
-            }),
+            controls: defaultControls({attribution: false, zoom: false}),
             layers: [
-                new TileLayer({
-                    source: new OSM()
-                }),
-                new VectorLayer({
-                    source: vectorSource,
-                    style: lineStyleFunction
-                }),
+                new TileLayer({source: new OSM()}),
+                lineLayer,
                 new VectorLayer({
                     source: highlightSource,
                     style: new Style({
@@ -66,265 +101,248 @@ function App() {
             ],
             view: new View({
                 projection: 'EPSG:4326',
-                center: [127.024612, 37.532600],
-                zoom: 12,
-            }),
+                center: [127.024612, 37.5326],
+                zoom: 12
+            })
         });
         mapRef.current = map;
 
-        // --- [NEW] 1. Hover Interaction (마우스 오버 시 시각적 효과) ---
-        // 클릭은 안 하고 '이거 선택할 거야?'라고 보여주기만 함
         const hoverSelect = new Select({
-            condition: pointerMove, // 마우스가 움직일 때 발동
-            style: hoverStyleFunction, // 마우스 올렸을 때 적용할 스타일
-            layers: [map.getLayers().getArray()[1]], // 데이터 레이어만 대상
-            hitTolerance: 10, // [UX 핵심] 10px 근처에만 가도 인식 (자석 효과)
+            condition: pointerMove,
+            style: null,
+            layers: [lineLayer],
+            hitTolerance: 10
         });
         map.addInteraction(hoverSelect);
 
-        // 마우스 커서 변경 로직 (선 위에 있으면 손가락, 아니면 기본)
-        map.on('pointermove', (e) => {
-            if (e.dragging) return;
-            const pixel = map.getEventPixel(e.originalEvent);
-            const hit = map.hasFeatureAtPixel(pixel, {hitTolerance: 10});
-            map.getTargetElement().style.cursor = hit ? 'pointer' : '';
-        });
-
-
-        // --- 2. Click Select Interaction (실제 선택 및 편집 진입) ---
         const select = new Select({
             condition: (e) => click(e) && !e.originalEvent.ctrlKey && !e.originalEvent.altKey,
-            style: null // 선택되어도 스타일 변경 안 함 (편집 모드 스타일은 따로 없으니)
+            style: null,
+            layers: [lineLayer],
+            hitTolerance: 10
         });
         selectInteractionRef.current = select;
         map.addInteraction(select);
 
-
-        // --- 3. Modify Interaction ---
         const modify = new Modify({
             features: select.getFeatures(),
             pixelTolerance: 10,
             deleteCondition: (e) => click(e) && (e.originalEvent.ctrlKey || e.originalEvent.altKey)
         });
-        modifyInteractionRef.current = modify;
         modify.setActive(false);
+        modifyInteractionRef.current = modify;
         map.addInteraction(modify);
 
+        // [수정 포인트] 라인 근접 hover 반응 + 커서 반영.
+        hoverSelect.on('select', (e) => {
+            const hovered = e.selected[0] || null;
+            hoveredFeatureIdRef.current = hovered?.getId() || null;
+            setHoveredFeatureId(hovered?.getId() || null);
+            lineLayer.changed();
+        });
 
-        // [이벤트] 피처 클릭 선택
+        map.on('pointermove', (e) => {
+            if (e.dragging) return;
+            const pixel = map.getEventPixel(e.originalEvent);
+            const hit = map.hasFeatureAtPixel(pixel, {hitTolerance: 10, layerFilter: (layer) => layer === lineLayer});
+            map.getTargetElement().style.cursor = hit ? 'pointer' : '';
+        });
+
+        // [수정 포인트] 지도에서 선택한 라인과 목록 선택 상태를 완전히 동기화.
         select.on('select', (e) => {
             const selected = e.selected[0];
             if (selected) {
-                setSelectedFeatureId(selected.getId());
+                const id = selected.getId();
+                selectedFeatureIdRef.current = id;
+                setSelectedFeatureId(id);
                 enterEditMode(selected);
-                // Hover 효과랑 겹치지 않게 Hover 선택은 풀어줌
-                hoverSelect.getFeatures().clear();
-            } else {
-                handleCancel();
             }
         });
 
-        // [이벤트] 하이라이트 (편집 모드일 때만)
-        map.on('click', (e) => {
-            if (e.originalEvent.ctrlKey || e.originalEvent.altKey) return;
-            if (!modify.getActive()) return; // 편집 중 아니면 무시
-            findClosestNodeAndUpdate(e.coordinate);
-        });
-
-        // [성능 최적화] 점 이동이 "끝났을 때"만 목록 갱신 (modifyend)
-        // 리액트 렌더링 부하 최소화
-        modify.on('modifyend', (e) => {
-            if (selectedFeatureId && sourceRef.current) {
-                const feature = sourceRef.current.getFeatureById(selectedFeatureId);
+        modify.on('modifyend', () => {
+            if (!selectedFeatureIdRef.current || !sourceRef.current) return;
+            const feature = sourceRef.current.getFeatureById(selectedFeatureIdRef.current);
+            if (feature) {
                 updateNodeList(feature);
             }
         });
 
+        // [수정 포인트] 정점 추가 모드일 때 클릭 좌표를 최근접 세그먼트에 삽입.
+        map.on('click', (e) => {
+            if (!isAddVertexModeRef.current) return;
+            if (!selectedFeatureIdRef.current || !sourceRef.current) return;
+            insertVertexToClosestSegment(e.coordinate);
+        });
 
-        // 초기 데이터
-        addDummyLine(vectorSource, 'Vertex01', [
-            [126.90, 37.53], [126.93, 37.52], [126.96, 37.51], [127.00, 37.53]
+        addDummyLine(vectorSource, 'Line-101', [
+            [126.9, 37.53], [126.93, 37.52], [126.96, 37.51], [127.0, 37.53]
         ]);
-        addDummyLine(vectorSource, 'Vertex02', [
+        addDummyLine(vectorSource, 'Line-102', [
             [127.027, 37.497], [127.024, 37.505], [127.021, 37.513]
         ]);
-
+        addDummyLine(vectorSource, 'Line-103', [
+            [127.05, 37.51], [127.045, 37.518], [127.04, 37.526], [127.035, 37.533]
+        ]);
         updateFeatureList();
 
-        // [피드백 반영] 확실한 Cleanup
         return () => {
-            if (mapRef.current) {
-                mapRef.current.setTarget(null);
-                mapRef.current = null;
-            }
+            map.setTarget(null);
+            mapRef.current = null;
         };
     }, []);
 
-    // --- Styles ---
+    useEffect(() => {
+        selectedFeatureIdRef.current = selectedFeatureId;
+        lineLayerRef.current?.changed();
+    }, [selectedFeatureId]);
 
-    // 평소 스타일 (파란 선)
-    const lineStyleFunction = (feature) => {
-        const geometry = feature.getGeometry();
-        const styles = [
-            new Style({stroke: new Stroke({color: '#0055ff', width: 4})})
-        ];
-        geometry.getCoordinates().forEach((coord) => {
-            styles.push(new Style({
-                geometry: new Point(coord),
-                image: new CircleStyle({
-                    radius: 5,
-                    fill: new Fill({color: 'white'}),
-                    stroke: new Stroke({color: '#0055ff', width: 2})
-                })
-            }));
-        });
-        return styles;
-    };
+    useEffect(() => {
+        hoveredFeatureIdRef.current = hoveredFeatureId;
+        lineLayerRef.current?.changed();
+    }, [hoveredFeatureId]);
 
-    // [NEW] 마우스 올렸을 때 스타일 (두꺼운 하늘색 + 투명도)
-    const hoverStyleFunction = (feature) => {
-        return new Style({
-            stroke: new Stroke({
-                color: 'rgba(0, 200, 255, 0.7)', // 반투명 하늘색
-                width: 10 // 두껍게 해서 "나 여기 있어!" 강조
-            }),
-            zIndex: 1 // 다른 선보다 위에 그림
-        });
-    };
+    useEffect(() => {
+        isAddVertexModeRef.current = isAddVertexMode;
+    }, [isAddVertexMode]);
 
-
-    // --- Helper Functions ---
     const addDummyLine = (source, name, coords) => {
         const feature = new Feature({
             geometry: new LineString(coords),
-            name: name,
+            name
         });
-        feature.setId(String(Date.now() + Math.random()));
+        feature.setId(`${name}-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
         source.addFeature(feature);
     };
 
     const updateFeatureList = () => {
         if (!sourceRef.current) return;
         const allFeatures = sourceRef.current.getFeatures();
-        const list = allFeatures.map(f => ({
-            id: f.getId(),
-            name: f.get('name'),
-        }));
-        setFeatures(list);
+        setFeatures(allFeatures.map((f) => ({id: f.getId(), name: f.get('name')})));
     };
 
     const updateNodeList = (feature) => {
-        if (!feature) return;
-        const geometry = feature.getGeometry();
-        if (!geometry || !geometry.getCoordinates) return;
-        const coords = geometry.getCoordinates();
-        setNodes(coords.map((c, idx) => ({id: idx, coord: c})));
+        const coords = feature?.getGeometry()?.getCoordinates?.() || [];
+        setNodes(coords.map((coord, idx) => ({id: idx, coord})));
     };
 
     const enterEditMode = (feature) => {
         setIsEditing(true);
-        modifyInteractionRef.current.setActive(true);
+        setIsAddVertexMode(false);
+        modifyInteractionRef.current?.setActive(true);
         backupGeometryRef.current = feature.getGeometry().clone();
-
         updateNodeList(feature);
         setHighlightedNodeIndex(null);
 
-        // [성능 최적화] 실시간 'change' 리스너 삭제함.
-        // 대신 점 추가/삭제(구조변경) 감지만 필요하다면 change 이벤트를 쓰되,
-        // 단순 드래그는 modifyend에서 처리.
-        // *단, 점 '추가'나 '삭제'는 modifyend에서 안 잡힐 수 있어서
-        // 구조 변경 감지용으로는 change를 쓰되 쓰로틀링(Throttling)을 걸거나 해야 함.
-        // 이번 요구사항(부하 줄이기)에 맞춰 일단 modifyend 위주로 처리.
-
-        mapRef.current.getView().fit(feature.getGeometry(), {padding: [50, 50, 50, 50], duration: 500});
+        // [수정 포인트] 라인 선택 시 해당 extent로 자동 줌.
+        mapRef.current?.getView().fit(feature.getGeometry(), {
+            padding: [50, 50, 50, 50],
+            duration: 400,
+            maxZoom: 18
+        });
     };
 
-    const findClosestNodeAndUpdate = (clickCoord) => {
-        if (!selectedFeatureId || !sourceRef.current) return;
-        const feature = sourceRef.current.getFeatureById(selectedFeatureId);
+    const insertVertexToClosestSegment = (clickCoord) => {
+        const feature = sourceRef.current?.getFeatureById(selectedFeatureIdRef.current);
         if (!feature) return;
-        const coords = feature.getGeometry().getCoordinates();
-        let closestIdx = -1;
-        let minDist = Infinity;
-        coords.forEach((c, idx) => {
-            const dx = c[0] - clickCoord[0];
-            const dy = c[1] - clickCoord[1];
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < minDist) {
-                minDist = dist;
-                closestIdx = idx;
+
+        const coords = [...feature.getGeometry().getCoordinates()];
+        if (coords.length < 2) return;
+
+        let bestIndex = 0;
+        let bestDist = Infinity;
+
+        for (let i = 0; i < coords.length - 1; i += 1) {
+            const dist = distanceToSegment(clickCoord, coords[i], coords[i + 1]);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIndex = i;
             }
-        });
-        if (closestIdx !== -1 && minDist < 0.005) {
-            setHighlightedNodeIndex(closestIdx);
-            highlightNodeOnMap(coords[closestIdx]);
-        } else {
-            setHighlightedNodeIndex(null);
-            highlightSourceRef.current.clear();
         }
+
+        coords.splice(bestIndex + 1, 0, clickCoord);
+        feature.setGeometry(new LineString(coords));
+        updateNodeList(feature);
+        setHighlightedNodeIndex(bestIndex + 1);
+        highlightNodeOnMap(clickCoord);
+    };
+
+    const distanceToSegment = (point, start, end) => {
+        const [px, py] = point;
+        const [x1, y1] = start;
+        const [x2, y2] = end;
+
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        if (dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+
+        const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+        const projX = x1 + t * dx;
+        const projY = y1 + t * dy;
+        return Math.hypot(px - projX, py - projY);
     };
 
     const handleNodeClick = (index, coord) => {
         setHighlightedNodeIndex(index);
         highlightNodeOnMap(coord);
-        mapRef.current.getView().animate({center: coord, duration: 300});
+        mapRef.current?.getView().animate({center: coord, duration: 300});
     };
 
     const highlightNodeOnMap = (coord) => {
         const source = highlightSourceRef.current;
-        source.clear();
-        source.addFeature(new Feature(new Point(coord)));
-    };
-
-    const handleSave = () => {
-        exitEditMode();
-        updateFeatureList();
-        console.log("저장 완료!");
-    };
-
-    const handleCancel = () => {
-        if (selectedFeatureId && backupGeometryRef.current && sourceRef.current) {
-            const feature = sourceRef.current.getFeatureById(selectedFeatureId);
-            if (feature) {
-                feature.setGeometry(backupGeometryRef.current);
-            }
-        }
-        exitEditMode();
+        source?.clear();
+        if (coord) source?.addFeature(new Feature(new Point(coord)));
     };
 
     const exitEditMode = () => {
         setIsEditing(false);
+        setIsAddVertexMode(false);
         setSelectedFeatureId(null);
-        backupGeometryRef.current = null;
+        selectedFeatureIdRef.current = null;
         setNodes([]);
-        highlightSourceRef.current.clear();
+        setHighlightedNodeIndex(null);
+        backupGeometryRef.current = null;
+        highlightSourceRef.current?.clear();
+        modifyInteractionRef.current?.setActive(false);
+        selectInteractionRef.current?.getFeatures().clear();
+    };
 
-        if (modifyInteractionRef.current) modifyInteractionRef.current.setActive(false);
-        if (selectInteractionRef.current) selectInteractionRef.current.getFeatures().clear();
+    const handleSave = () => {
+        setIsAddVertexMode(false);
+        modifyInteractionRef.current?.setActive(false);
+        updateFeatureList();
+        console.log('저장 완료 (더미)');
+    };
+
+    const handleCancel = () => {
+        if (selectedFeatureIdRef.current && backupGeometryRef.current && sourceRef.current) {
+            const feature = sourceRef.current.getFeatureById(selectedFeatureIdRef.current);
+            if (feature) feature.setGeometry(backupGeometryRef.current.clone());
+        }
+        exitEditMode();
     };
 
     const handleListClick = (id) => {
-        if (isEditing) {
-            alert("저장/취소 먼저 해주세요");
-            return;
-        }
-        const feature = sourceRef.current.getFeatureById(id);
-        if (feature) {
-            selectInteractionRef.current.getFeatures().clear();
-            selectInteractionRef.current.getFeatures().push(feature);
-            setSelectedFeatureId(id);
-            enterEditMode(feature);
-        }
+        const feature = sourceRef.current?.getFeatureById(id);
+        if (!feature) return;
+
+        selectInteractionRef.current?.getFeatures().clear();
+        selectInteractionRef.current?.getFeatures().push(feature);
+        selectedFeatureIdRef.current = id;
+        setSelectedFeatureId(id);
+        enterEditMode(feature);
     };
 
     return (
         <div className="container">
             <div className="sidebar">
-                <div className="sidebar-header">Lines (Features)</div>
+                <div className="sidebar-header">Lines</div>
                 <ul className="vertex-list">
                     {features.map((item) => (
-                        <li key={item.id} className={`vertex-item ${selectedFeatureId === item.id ? 'selected' : ''}`}
-                            onClick={() => handleListClick(item.id)}>
+                        <li
+                            key={item.id}
+                            className={`vertex-item ${selectedFeatureId === item.id ? 'selected' : ''}`}
+                            onClick={() => handleListClick(item.id)}
+                        >
                             {item.name}
                         </li>
                     ))}
@@ -334,31 +352,35 @@ function App() {
             <div className="map-wrapper">
                 {isEditing && (
                     <div className="control-panel">
-            <span style={{fontSize: '0.9rem', alignSelf: 'center'}}>
-                Editing: <strong>{features.find(f => f.id === selectedFeatureId)?.name}</strong>
-            </span>
+                        <span style={{fontSize: '0.9rem', alignSelf: 'center'}}>
+                            Editing: <strong>{features.find((f) => f.id === selectedFeatureId)?.name}</strong>
+                        </span>
+                        {/* [수정 포인트] 정점 추가 모드 토글 버튼 */}
+                        <button onClick={() => setIsAddVertexMode((prev) => !prev)} style={{cursor: 'pointer'}}>
+                            {isAddVertexMode ? '정점 추가 종료' : '정점 추가'}
+                        </button>
                         <button onClick={handleSave} style={{cursor: 'pointer'}}>Save</button>
                         <button onClick={handleCancel} style={{cursor: 'pointer'}}>Cancel</button>
                     </div>
                 )}
-                <div id="map" ref={mapElement}></div>
+                <div id="map" ref={mapElement}/>
             </div>
 
             {isEditing && (
                 <div className="node-sidebar">
                     <div className="node-header">
                         Vertices ({nodes.length} points)<br/>
-                        <span style={{fontSize: '0.7rem', color: '#aaa'}}>Ctrl+Click on vertex to delete</span>
+                        <span style={{fontSize: '0.7rem', color: '#ddd'}}>드래그 이동 / Ctrl(or Alt)+클릭 삭제 / 추가모드에서 클릭 추가</span>
                     </div>
                     <ul className="node-list">
                         {nodes.map((node, index) => (
-                            <li key={index}
+                            <li
+                                key={node.id}
                                 className={`node-item ${highlightedNodeIndex === index ? 'highlight' : ''}`}
-                                onClick={() => handleNodeClick(index, node.coord)}>
+                                onClick={() => handleNodeClick(index, node.coord)}
+                            >
                                 <span>#{index + 1}</span>
-                                <span>
-                            {node.coord?.[0] ? `${node.coord[0].toFixed(4)}, ${node.coord[1].toFixed(4)}` : ''}
-                        </span>
+                                <span>{node.coord ? `${node.coord[0].toFixed(5)}, ${node.coord[1].toFixed(5)}` : ''}</span>
                             </li>
                         ))}
                     </ul>
