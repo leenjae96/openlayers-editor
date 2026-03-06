@@ -1,0 +1,9 @@
+# [수정 포인트] Oracle 연결 예시
+spring.datasource.driver-class-name=oracle.jdbc.OracleDriver
+spring.datasource.url=jdbc:oracle:thin:@//127.0.0.1:1521/ORCL
+spring.datasource.username=APP_USER
+spring.datasource.password=APP_PASSWORD
+
+editor.db.vendor=oracle
+editor.db.link-table=TB_LINK
+editor.db.vertex-table=TB_VERTEX

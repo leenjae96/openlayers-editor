@@ -11,6 +11,7 @@ import LineString from 'ol/geom/LineString';
 import Point from 'ol/geom/Point';
 import {Circle as CircleStyle, Fill, Stroke, Style} from 'ol/style';
 import {defaults as defaultControls} from 'ol/control';
+import {fetchLines, makeSavePayload, saveLineVertices} from './api/lineApi';
 
 import './App.css';
 
@@ -174,16 +175,8 @@ function App() {
             insertVertexToClosestSegment(e.coordinate);
         });
 
-        addDummyLine(vectorSource, 'Line-101', [
-            [126.9, 37.53], [126.93, 37.52], [126.96, 37.51], [127.0, 37.53]
-        ]);
-        addDummyLine(vectorSource, 'Line-102', [
-            [127.027, 37.497], [127.024, 37.505], [127.021, 37.513]
-        ]);
-        addDummyLine(vectorSource, 'Line-103', [
-            [127.05, 37.51], [127.045, 37.518], [127.04, 37.526], [127.035, 37.533]
-        ]);
-        updateFeatureList();
+        // [수정 포인트] 백엔드 조회 API에서 라인/정점 데이터 로딩 (실패 시 더미 fallback은 lineApi 내부 처리).
+        loadLines(vectorSource);
 
         return () => {
             map.setTarget(null);
@@ -205,13 +198,22 @@ function App() {
         isAddVertexModeRef.current = isAddVertexMode;
     }, [isAddVertexMode]);
 
-    const addDummyLine = (source, name, coords) => {
+    const addLineFeature = (source, id, name, coords) => {
         const feature = new Feature({
             geometry: new LineString(coords),
             name
         });
-        feature.setId(`${name}-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+        feature.setId(id);
         source.addFeature(feature);
+    };
+
+    const loadLines = async (source) => {
+        const lineDtos = await fetchLines();
+        source.clear();
+        lineDtos.forEach((lineDto) => {
+            addLineFeature(source, lineDto.lineId, lineDto.lineName, lineDto.coordinates);
+        });
+        updateFeatureList();
     };
 
     const updateFeatureList = () => {
@@ -306,11 +308,30 @@ function App() {
         selectInteractionRef.current?.getFeatures().clear();
     };
 
-    const handleSave = () => {
-        setIsAddVertexMode(false);
-        modifyInteractionRef.current?.setActive(false);
-        updateFeatureList();
-        console.log('저장 완료 (더미)');
+    const handleSave = async () => {
+        if (!selectedFeatureIdRef.current || !sourceRef.current) return;
+
+        const feature = sourceRef.current.getFeatureById(selectedFeatureIdRef.current);
+        if (!feature) return;
+
+        const payload = makeSavePayload({
+            featureId: selectedFeatureIdRef.current,
+            lineName: feature.get('name'),
+            coordinates: feature.getGeometry().getCoordinates()
+        });
+
+        // [수정 포인트] 저장 버튼 클릭 시 변경된 정점 순서/좌표를 API로 전송.
+        try {
+            await saveLineVertices(payload);
+            setIsAddVertexMode(false);
+            modifyInteractionRef.current?.setActive(false);
+            updateFeatureList();
+            backupGeometryRef.current = feature.getGeometry().clone();
+            console.log('저장 완료', payload);
+        } catch (error) {
+            console.error(error);
+            alert('저장 실패: API 연결 및 DB 설정을 확인해주세요.');
+        }
     };
 
     const handleCancel = () => {
