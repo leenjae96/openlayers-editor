@@ -1,0 +1,9 @@
+# [수정 포인트] Tibero 연결 예시
+spring.datasource.driver-class-name=com.tmax.tibero.jdbc.TbDriver
+spring.datasource.url=jdbc:tibero:thin:@127.0.0.1:8629:tibero
+spring.datasource.username=APP_USER
+spring.datasource.password=APP_PASSWORD
+
+editor.db.vendor=tibero
+editor.db.link-table=TB_LINK
+editor.db.vertex-table=TB_VERTEX
